@@ -194,7 +194,7 @@ done
 # Strip user@ prefix if present
 host="${{host#*@}}"
 {host_check}
-exec {real_ssh} "${{args[@]}}"
+exec {real_ssh} -F /dev/null "${{args[@]}}"
 "##,
         real_ssh = real_ssh.display(),
     );
