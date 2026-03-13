@@ -8,9 +8,9 @@ use std::path::PathBuf;
     after_help = "Everything after `--` is passed to the inner command (claude by default)."
 )]
 pub struct Cli {
-    /// Select scope by ID (from .claude/wrap.toml ancestry)
+    /// Add a scope by ID (repeatable; adds to default scopes)
     #[arg(short, long, value_name = "ID")]
-    pub scope: Option<String>,
+    pub scope: Vec<String>,
 
     /// Grant ad-hoc write access (repeatable)
     #[arg(short, long, value_name = "PATH")]

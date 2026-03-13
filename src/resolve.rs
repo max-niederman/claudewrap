@@ -51,36 +51,41 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
     let cwd = std::env::current_dir().context("getting current directory")?;
     let configs = discover_configs(&cwd)?;
 
-    // Select scope
-    let selected: Option<&LocatedConfig> = if let Some(ref scope_id) = cli.scope {
+    // Collect active scopes: all default=true scopes, plus any explicitly requested via -s
+    let mut active: Vec<&LocatedConfig> = configs
+        .iter()
+        .filter(|c| c.config.scope.default)
+        .collect();
+
+    for scope_id in &cli.scope {
         let found = configs
             .iter()
             .find(|c| c.config.scope.id.as_deref() == Some(scope_id.as_str()));
         match found {
-            Some(c) => Some(c),
+            Some(c) => {
+                if !active.iter().any(|a| std::ptr::eq(*a, c)) {
+                    active.push(c);
+                }
+            }
             None => bail!("scope '{scope_id}' not found in any .claude/wrap.toml"),
         }
-    } else {
-        // Use innermost scope with default = true; fall back to none
-        configs.iter().find(|c| c.config.scope.default)
-    };
+    }
 
-    // Collect write paths from innermost scope up to (and including) the selected scope.
-    // Scopes beyond (outer to) the selected scope are not included.
+    let scope_id = active.first().and_then(|s| s.config.scope.id.clone());
+
+    // OR-merge all active scopes: write paths, sockets, SSH — permissions only expand
     let mut write_paths: Vec<PathBuf> = Vec::new();
+    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus, mut cfg_ssh) =
+        <(bool, bool, DbusMode, SshConfig)>::default();
 
-    if let Some(sel) = selected {
-        let sel_idx = configs
-            .iter()
-            .position(|c| std::ptr::eq(c, sel))
-            .unwrap();
-
-        for located in &configs[..=sel_idx] {
-            for w in &located.config.filesystem.write {
-                let resolved = resolve_path(&located.base_dir, w);
-                write_paths.push(resolved);
-            }
+    for located in &active {
+        for w in &located.config.filesystem.write {
+            write_paths.push(resolve_path(&located.base_dir, w));
         }
+        cfg_wayland |= located.config.sockets.wayland;
+        cfg_pipewire |= located.config.sockets.pipewire;
+        cfg_dbus = cfg_dbus.merge(&located.config.sockets.dbus);
+        cfg_ssh = cfg_ssh.merge(&located.config.ssh);
     }
 
     // Auto-detect git repo / worktree and grant write access
@@ -99,25 +104,6 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
             cwd.join(w)
         };
         write_paths.push(resolved);
-    }
-
-    // Socket/SSH settings: OR across all scopes from innermost to selected.
-    // Permissions only expand, never restrict.
-    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus, mut cfg_ssh) =
-        <(bool, bool, DbusMode, SshConfig)>::default();
-
-    if let Some(sel) = selected {
-        let sel_idx = configs
-            .iter()
-            .position(|c| std::ptr::eq(c, sel))
-            .unwrap();
-
-        for located in &configs[..=sel_idx] {
-            cfg_wayland |= located.config.sockets.wayland;
-            cfg_pipewire |= located.config.sockets.pipewire;
-            cfg_dbus = cfg_dbus.merge(&located.config.sockets.dbus);
-            cfg_ssh = cfg_ssh.merge(&located.config.ssh);
-        }
     }
 
     let wayland = if cli.wayland {
@@ -146,7 +132,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         .unwrap_or_else(|| "claude".to_string());
 
     Ok(ResolvedConfig {
-        scope_id: selected.and_then(|s| s.config.scope.id.clone()),
+        scope_id,
         write_paths,
         wayland,
         pipewire,
