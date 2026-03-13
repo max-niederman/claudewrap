@@ -4,16 +4,14 @@ mod resolve;
 mod sandbox;
 mod sockets;
 
-use std::fs;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
-use tracing::info;
+use tracing::{debug, info};
 
 use cli::Cli;
 
@@ -37,7 +35,7 @@ fn run() -> Result<ExitCode> {
                     if cli.verbose {
                         "claudewrap=debug".into()
                     } else {
-                        "claudewrap=warn".into()
+                        "claudewrap=info".into()
                     }
                 }),
         )
@@ -47,46 +45,32 @@ fn run() -> Result<ExitCode> {
     let config = resolve::resolve(&cli)?;
 
     if cli.verbose {
-        info!(scopes = ?config.active_scopes, "active scopes");
-        info!(paths = ?config.write_paths, "write paths");
-        info!(wayland = config.wayland, pipewire = config.pipewire, dbus = ?config.dbus, "sockets");
-        info!(command = config.command, args = ?config.cmd_args, "command");
+        debug!(scopes = ?config.active_scopes, "active scopes");
+        debug!(paths = ?config.write_paths, "write paths");
+        debug!(wayland = config.wayland, pipewire = config.pipewire, dbus = ?config.dbus, "sockets");
+        debug!(command = config.command, args = ?config.cmd_args, "command");
     }
 
-    // Ensure sandbox SSH key exists
-    let ssh_key = ensure_sandbox_key()?;
-
-    // Create per-PID temp dir (for SSH wrapper script)
-    let pid = std::process::id();
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/tmp".into());
-    let temp_dir = PathBuf::from(&runtime_dir).join(format!("claudewrap-{pid}"));
-    fs::create_dir_all(&temp_dir)
-        .with_context(|| format!("creating temp dir {}", temp_dir.display()))?;
-
-    // Start dedicated ssh-agent with only the sandbox key
-    let agent_dir = PathBuf::from(&runtime_dir).join("claudewrap");
-    fs::create_dir_all(&agent_dir)
-        .with_context(|| format!("creating agent dir {}", agent_dir.display()))?;
-    let agent_sock = agent_dir.join("agent.sock");
-
-    // Remove stale socket if it exists
-    if agent_sock.exists() {
-        let _ = fs::remove_file(&agent_sock);
-    }
-
-    let agent_pid = start_ssh_agent(&agent_sock, &ssh_key)?;
-    info!("ssh-agent started (pid {agent_pid}) at {}", agent_sock.display());
+    // Validate host SSH agent if enabled
+    let ssh_info = if config.ssh_agent {
+        if config.ssh_keys.is_empty() {
+            bail!(
+                "ssh.agent is enabled but no keys configured\n\
+                 Add fingerprints to [ssh] keys in .claude/wrap.toml or pass --ssh-key SHA256:..."
+            );
+        }
+        let info = validate_host_agent(&config.ssh_keys)?;
+        info!("using host SSH agent at {}", info.sock.display());
+        Some(info)
+    } else {
+        None
+    };
 
     // Build bwrap command
-    let cmd = sandbox::build_command(
-        &config,
-        Some(&agent_sock),
-    );
+    let cmd = sandbox::build_command(&config, ssh_info.as_ref());
 
     if config.dry_run {
         println!("{}", sandbox::format_command(&cmd));
-        cleanup(&temp_dir, Some(agent_pid));
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -108,115 +92,79 @@ fn run() -> Result<ExitCode> {
 
     let status = child.wait().context("waiting for bwrap")?;
 
-    cleanup(&temp_dir, Some(agent_pid));
-
     Ok(ExitCode::from(
         status.code().unwrap_or(1) as u8,
     ))
 }
 
-/// Ensure ~/.ssh/id_claudewrap_ed25519 exists, prompting to create if missing.
-fn ensure_sandbox_key() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let key_path = PathBuf::from(&home).join(".ssh/id_claudewrap_ed25519");
-
-    if key_path.exists() {
-        return Ok(key_path);
-    }
-
-    eprint!("No sandbox SSH key found. Create {}? [y/N] ", key_path.display());
-    io::stderr().flush()?;
-
-    let mut answer = String::new();
-    io::stdin().read_line(&mut answer)?;
-
-    if answer.trim().eq_ignore_ascii_case("y") {
-        // Ensure ~/.ssh exists
-        if let Some(ssh_dir) = key_path.parent() {
-            fs::create_dir_all(ssh_dir)?;
-        }
-
-        let status = std::process::Command::new("ssh-keygen")
-            .args([
-                "-t", "ed25519",
-                "-f", &key_path.to_string_lossy(),
-                "-N", "",
-                "-C", "claudewrap sandbox key",
-            ])
-            .status()
-            .context("running ssh-keygen")?;
-
-        if !status.success() {
-            bail!("ssh-keygen failed");
-        }
-
-        let pub_path = key_path.with_file_name("id_claudewrap_ed25519.pub");
-        eprintln!("Key created. Add the public key to GitHub:");
-        eprintln!("  {}", pub_path.display());
-        Ok(key_path)
-    } else {
-        bail!(
-            "sandbox SSH key is required; create it with:\n  \
-             ssh-keygen -t ed25519 -f {} -N \"\" -C \"claudewrap sandbox key\"",
-            key_path.display()
-        );
-    }
+pub struct SshAgentInfo {
+    pub sock: PathBuf,
+    /// Public key string for the first matched key (used for git signing)
+    pub signing_key: String,
 }
 
-/// Spawn ssh-agent bound to `sock_path`, add `key_path`, return agent PID.
-fn start_ssh_agent(sock_path: &Path, key_path: &Path) -> Result<u32> {
-    // Start ssh-agent with a dedicated socket
-    let output = std::process::Command::new("ssh-agent")
-        .arg("-a")
-        .arg(sock_path)
+/// Validate the host SSH agent has all requested keys.
+/// Returns socket path and the public key of the first matched key (for git signing).
+fn validate_host_agent(fingerprints: &[String]) -> Result<SshAgentInfo> {
+    let sock = std::env::var("SSH_AUTH_SOCK")
+        .context("SSH_AUTH_SOCK is not set — is an ssh-agent running?")?;
+    let sock_path = PathBuf::from(&sock);
+
+    // List keys with SHA256 fingerprints
+    let output = std::process::Command::new("ssh-add")
+        .args(["-l", "-E", "sha256"])
+        .env("SSH_AUTH_SOCK", &sock)
         .output()
-        .context("spawning ssh-agent")?;
+        .context("running ssh-add -l")?;
 
     if !output.status.success() {
         bail!(
-            "ssh-agent failed: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "ssh-add -l failed (is your agent running?): {}",
+            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
 
-    // Parse PID from ssh-agent output (e.g. "SSH_AGENT_PID=12345; ...")
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let agent_pid: u32 = stdout
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("SSH_AGENT_PID=")
-                .and_then(|rest| rest.trim_end_matches(';').trim().parse().ok())
-        })
-        .or_else(|| {
-            // Also try "echo Agent pid NNN;" format
-            stdout.lines().find_map(|line| {
-                line.strip_prefix("echo Agent pid ")
-                    .and_then(|rest| rest.trim_end_matches(';').trim().parse().ok())
-            })
-        })
-        .context("could not parse SSH_AGENT_PID from ssh-agent output")?;
+    let listing = String::from_utf8_lossy(&output.stdout);
 
-    // Add the sandbox key
-    let add_status = std::process::Command::new("ssh-add")
-        .arg(key_path)
-        .env("SSH_AUTH_SOCK", sock_path)
-        .status()
-        .context("running ssh-add")?;
-
-    if !add_status.success() {
-        // Kill the agent we just started before bailing
-        unsafe { libc::kill(agent_pid as i32, libc::SIGTERM); }
-        bail!("ssh-add failed to load sandbox key");
-    }
-
-    Ok(agent_pid)
-}
-
-fn cleanup(temp_dir: &Path, agent_pid: Option<u32>) {
-    let _ = fs::remove_dir_all(temp_dir);
-    if let Some(pid) = agent_pid {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
+    // Verify all fingerprints appear in the listing
+    for fp in fingerprints {
+        if !listing.lines().any(|line| line.contains(fp.as_str())) {
+            bail!(
+                "key {fp} not found in SSH agent\n\
+                 Available keys:\n{listing}\
+                 Add the key with: ssh-add <path-to-key>"
+            );
         }
     }
+
+    // Get full public keys to find the matching one for git signing.
+    // ssh-add -l and -L output lines in the same order, so we correlate by index.
+    let pub_output = std::process::Command::new("ssh-add")
+        .args(["-L"])
+        .env("SSH_AUTH_SOCK", &sock)
+        .output()
+        .context("running ssh-add -L")?;
+
+    if !pub_output.status.success() {
+        bail!("ssh-add -L failed: {}", String::from_utf8_lossy(&pub_output.stderr).trim());
+    }
+
+    let pub_stdout = String::from_utf8_lossy(&pub_output.stdout);
+    let pub_lines: Vec<&str> = pub_stdout.lines().collect();
+    let fingerprint_lines: Vec<&str> = listing.lines().collect();
+
+    // Use the first configured fingerprint for git signing
+    let signing_key = fingerprint_lines
+        .iter()
+        .zip(pub_lines.iter())
+        .find(|(fp_line, _)| fp_line.contains(fingerprints[0].as_str()))
+        .map(|(_, pub_line)| pub_line.to_string())
+        .ok_or_else(|| {
+            anyhow::anyhow!("could not find public key for fingerprint {}", fingerprints[0])
+        })?;
+
+    Ok(SshAgentInfo {
+        sock: sock_path,
+        signing_key,
+    })
 }

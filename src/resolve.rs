@@ -17,6 +17,10 @@ pub struct ResolvedConfig {
     pub cmd_args: Vec<String>,
     pub cwd: PathBuf,
     pub dry_run: bool,
+    /// Whether to pass through the host SSH agent
+    pub ssh_agent: bool,
+    /// SSH key fingerprints to validate in host agent
+    pub ssh_keys: Vec<String>,
 }
 
 /// Walk from `start` up to `/`, collecting all `.claude/wrap.toml` files.
@@ -130,6 +134,23 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         .clone()
         .unwrap_or_else(|| "claude".to_string());
 
+    // SSH: OR-merge agent flag across scopes, union keys; CLI --ssh-key adds to the set
+    let mut ssh_agent = active.iter().any(|c| c.config.ssh.agent);
+    let mut ssh_keys: Vec<String> = active
+        .iter()
+        .flat_map(|c| c.config.ssh.keys.iter().cloned())
+        .collect();
+    for k in &cli.ssh_key {
+        if !ssh_keys.contains(k) {
+            ssh_keys.push(k.clone());
+        }
+        // --ssh-key implies agent
+        ssh_agent = true;
+    }
+    if cli.no_ssh_agent {
+        ssh_agent = false;
+    }
+
     Ok(ResolvedConfig {
         active_scopes,
         write_paths,
@@ -140,6 +161,8 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         cmd_args: cli.cmd_args.clone(),
         cwd,
         dry_run: cli.dry_run,
+        ssh_agent,
+        ssh_keys,
     })
 }
 

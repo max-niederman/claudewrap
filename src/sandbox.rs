@@ -1,13 +1,14 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::resolve::ResolvedConfig;
 use crate::sockets::{self, SocketMount};
+use crate::SshAgentInfo;
 
 /// Build the bwrap Command from resolved config.
 pub fn build_command(
     config: &ResolvedConfig,
-    agent_sock: Option<&Path>,
+    ssh: Option<&SshAgentInfo>,
 ) -> Command {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
     let home_path = PathBuf::from(&home);
@@ -66,8 +67,8 @@ pub fn build_command(
     // 7. SSH agent socket — needs a writable bind-mount because
     //    connect() on a Unix socket requires write permission, and the
     //    ro-bind root makes everything read-only.
-    if let Some(sock) = agent_sock {
-        if let Some(parent) = sock.parent() {
+    if let Some(ssh) = ssh {
+        if let Some(parent) = ssh.sock.parent() {
             cmd.arg("--bind").arg(parent).arg(parent);
         }
     }
@@ -90,16 +91,16 @@ pub fn build_command(
         }
     }
 
-    if let Some(sock) = agent_sock {
+    if let Some(ssh) = ssh {
         cmd.arg("--setenv")
             .arg("SSH_AUTH_SOCK")
-            .arg(sock.to_string_lossy().as_ref());
+            .arg(ssh.sock.to_string_lossy().as_ref());
 
-        // Override git signing config to use the sandbox key
-        let sandbox_pub_key = PathBuf::from(&home).join(".ssh/id_claudewrap_ed25519.pub");
+        // Override git signing config to use the key from the host agent
+        let key_literal = format!("key::{}", ssh.signing_key);
         cmd.arg("--setenv").arg("GIT_CONFIG_COUNT").arg("2");
         cmd.arg("--setenv").arg("GIT_CONFIG_KEY_0").arg("user.signingkey");
-        cmd.arg("--setenv").arg("GIT_CONFIG_VALUE_0").arg(&sandbox_pub_key);
+        cmd.arg("--setenv").arg("GIT_CONFIG_VALUE_0").arg(&key_literal);
         cmd.arg("--setenv").arg("GIT_CONFIG_KEY_1").arg("gpg.ssh.allowedSignersFile");
         cmd.arg("--setenv").arg("GIT_CONFIG_VALUE_1").arg("");
     }

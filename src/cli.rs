@@ -36,6 +36,14 @@ pub struct Cli {
     #[arg(long, value_name = "MODE")]
     pub dbus: Option<String>,
 
+    /// SSH key fingerprint to allow from host agent (repeatable, e.g. "SHA256:...")
+    #[arg(long, value_name = "FINGERPRINT")]
+    pub ssh_key: Vec<String>,
+
+    /// Disable SSH agent passthrough
+    #[arg(long)]
+    pub no_ssh_agent: bool,
+
     /// Print bwrap command, don't execute
     #[arg(long)]
     pub dry_run: bool,

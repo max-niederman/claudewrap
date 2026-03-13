@@ -8,6 +8,16 @@ pub struct WrapConfig {
     pub scope: ScopeConfig,
     pub filesystem: FilesystemConfig,
     pub sockets: SocketsConfig,
+    pub ssh: SshConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub struct SshConfig {
+    /// Whether to pass through the host SSH agent (default: false)
+    pub agent: bool,
+    /// Key fingerprints to validate and allow (e.g. ["SHA256:..."])
+    pub keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
