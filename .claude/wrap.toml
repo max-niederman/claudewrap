@@ -1,0 +1,14 @@
+[scope]
+id = "claudewrap"
+
+[filesystem]
+write = ["."]
+
+[sockets]
+wayland = true
+
+[ssh]
+agent = true
+allow-signing = true
+allow-ssh = false
+allow-hosts = ["github.com", "gitlab.com"]
