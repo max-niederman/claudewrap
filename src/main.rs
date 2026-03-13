@@ -51,7 +51,11 @@ fn run() -> Result<ExitCode> {
     let config = resolve::resolve(&cli)?;
 
     if cli.verbose {
-        eprintln!("Resolved config:\n{config:#?}");
+        info!(scopes = ?config.active_scopes, "active scopes");
+        info!(paths = ?config.write_paths, "write paths");
+        info!(wayland = config.wayland, pipewire = config.pipewire, dbus = ?config.dbus, "sockets");
+        info!(agent = config.ssh.agent, signing = config.ssh.allow_signing, ssh = config.ssh.allow_ssh, hosts = ?config.ssh.allow_hosts, "ssh");
+        info!(command = config.command, args = ?config.cmd_args, "command");
     }
 
     // Create temp dir
@@ -147,10 +151,6 @@ fn generate_ssh_wrapper(temp_dir: &Path, config: &resolve::ResolvedConfig) -> Re
             .collect();
         format!(
             r#"
-# Validate host
-host="${{@: -1}}"
-# Strip user@ prefix if present
-host="${{host#*@}}"
 case "$host" in
 {patterns}
     *) echo "claudewrap: SSH to '$host' not allowed" >&2; exit 1 ;;
@@ -164,7 +164,7 @@ esac
         r##"#!/bin/sh
 # claudewrap SSH wrapper — restricts SSH usage to git transport only
 
-# Strip dangerous flags
+# Strip dangerous flags, collect clean args
 args=()
 skip_next=false
 for arg in "$@"; do
@@ -174,22 +174,26 @@ for arg in "$@"; do
     fi
     case "$arg" in
         -A|-L|-R|-D|-W|-N) continue ;;
-        -o) skip_next=true; continue ;;
+        -o|-p|-l|-i|-F) skip_next=true; args+=("$arg") ;;
         *) args+=("$arg") ;;
     esac
 done
-{host_check}
-# Validate remote command is git transport
+
+# Find the host: first non-flag argument after stripping
+host=""
 for arg in "${{args[@]}}"; do
     case "$arg" in
-        git-upload-pack*|git-receive-pack*|git-upload-archive*) ;;
         -*) ;;
-        *@*) ;;
-        *.*) ;;
-        *) ;;
+        *)
+            if [ -z "$host" ]; then
+                host="$arg"
+            fi
+            ;;
     esac
 done
-
+# Strip user@ prefix if present
+host="${{host#*@}}"
+{host_check}
 exec {real_ssh} "${{args[@]}}"
 "##,
         real_ssh = real_ssh.display(),

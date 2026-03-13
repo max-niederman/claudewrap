@@ -8,7 +8,7 @@ use crate::config::{DbusMode, LocatedConfig, SshConfig, WrapConfig};
 /// Fully resolved configuration ready for sandbox building.
 #[derive(Debug)]
 pub struct ResolvedConfig {
-    pub scope_id: Option<String>,
+    pub active_scopes: Vec<String>,
     pub write_paths: Vec<PathBuf>,
     pub wayland: bool,
     pub pipewire: bool,
@@ -71,7 +71,10 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         }
     }
 
-    let scope_id = active.first().and_then(|s| s.config.scope.id.clone());
+    let active_scopes: Vec<String> = active
+        .iter()
+        .filter_map(|s| s.config.scope.id.clone())
+        .collect();
 
     // OR-merge all active scopes: write paths, sockets, SSH — permissions only expand
     let mut write_paths: Vec<PathBuf> = Vec::new();
@@ -132,7 +135,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         .unwrap_or_else(|| "claude".to_string());
 
     Ok(ResolvedConfig {
-        scope_id,
+        active_scopes,
         write_paths,
         wayland,
         pipewire,
