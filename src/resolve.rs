@@ -21,6 +21,8 @@ pub struct ResolvedConfig {
     pub ssh_agent: bool,
     /// SSH key fingerprints to validate in host agent
     pub ssh_keys: Vec<String>,
+    /// Paths to discovered wrap.toml files (to be mounted read-only)
+    pub config_files: Vec<PathBuf>,
 }
 
 /// Walk from `start` up to `/`, collecting all `.claude/wrap.toml` files.
@@ -151,6 +153,11 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         ssh_agent = false;
     }
 
+    let config_files: Vec<PathBuf> = configs
+        .iter()
+        .map(|c| c.base_dir.join(".claude").join("wrap.toml"))
+        .collect();
+
     Ok(ResolvedConfig {
         active_scopes,
         write_paths,
@@ -163,6 +170,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         dry_run: cli.dry_run,
         ssh_agent,
         ssh_keys,
+        config_files,
     })
 }
 

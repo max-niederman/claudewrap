@@ -14,14 +14,16 @@ claudewrap builds a `bwrap` command that:
 
 ## Requirements
 
-- Linux with [bubblewrap](https://github.com/containers/bubblewrap) installed
-- An SSH agent running with the desired key(s) loaded (`ssh-add`), if SSH is enabled
+- Linux with [bubblewrap](https://github.com/containers/bubblewrap) installed (included automatically when using the Nix flake)
+- An SSH agent with the desired key(s) loaded, if SSH passthrough is enabled
 
 ## Install
 
 ```
-cargo install --path .
+nix profile install github:max-niederman/claudewrap
 ```
+
+Or add the flake as an input and use the overlay/package in your NixOS/home-manager config.
 
 ## Usage
 

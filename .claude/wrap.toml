@@ -10,6 +10,4 @@ wayland = true
 
 [ssh]
 agent = true
-allow-signing = true
-allow-ssh = false
-allow-hosts = ["github.com", "gitlab.com"]
+keys = ["SHA256:e+fKYRRWG/6FjkRVI8TNsrUxw6rxPk1mNB02IkQyGIE"]

@@ -54,6 +54,13 @@ pub fn build_command(
         cmd.arg("--bind").arg(&canonical).arg(&canonical);
     }
 
+    // 5b. Protect wrap.toml files — ro-bind after writable mounts to override
+    for f in &config.config_files {
+        if f.exists() {
+            cmd.arg("--ro-bind").arg(f).arg(f);
+        }
+    }
+
     // 6. Socket bind-mounts
     let socket_mounts = sockets::resolve_socket_mounts(config);
     for SocketMount {
