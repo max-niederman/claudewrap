@@ -235,14 +235,18 @@ fn validate_and_filter_agent(fingerprints: &[String]) -> Result<FilteredAgent> {
     }
 
     // Parse SSH_AUTH_SOCK and SSH_AGENT_PID from output
-    // Output format: SSH_AUTH_SOCK=...; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=...; ...
+    // Output format: SSH_AUTH_SOCK='...'; export SSH_AUTH_SOCK;\nSSH_AGENT_PID='...'; ...
     let stdout = String::from_utf8_lossy(&filter_output.stdout);
 
     let filter_sock = stdout
         .lines()
         .find_map(|line| {
             line.strip_prefix("SSH_AUTH_SOCK=")
-                .map(|rest| rest.trim_end_matches("; export SSH_AUTH_SOCK;").to_string())
+                .map(|rest| {
+                    rest.split(';').next().unwrap_or(rest)
+                        .trim_matches('\'')
+                        .to_string()
+                })
         })
         .context("could not parse SSH_AUTH_SOCK from ssh-agent-filter output")?;
 
@@ -250,13 +254,11 @@ fn validate_and_filter_agent(fingerprints: &[String]) -> Result<FilteredAgent> {
         .lines()
         .find_map(|line| {
             line.strip_prefix("SSH_AGENT_PID=")
-                .and_then(|rest| rest.trim_end_matches("; export SSH_AGENT_PID;").parse().ok())
-        })
-        .or_else(|| {
-            stdout.lines().find_map(|line| {
-                line.strip_prefix("echo Agent pid ")
-                    .and_then(|rest| rest.trim_end_matches(';').trim().parse().ok())
-            })
+                .and_then(|rest| {
+                    rest.split(';').next().unwrap_or(rest)
+                        .trim_matches('\'')
+                        .parse().ok()
+                })
         })
         .context("could not parse SSH_AGENT_PID from ssh-agent-filter output")?;
 
