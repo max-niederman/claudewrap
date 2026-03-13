@@ -8,6 +8,7 @@ use crate::config::{DbusMode, LocatedConfig, SshConfig, WrapConfig};
 /// Fully resolved configuration ready for sandbox building.
 #[derive(Debug)]
 pub struct ResolvedConfig {
+    pub scope_id: Option<String>,
     pub write_paths: Vec<PathBuf>,
     pub wayland: bool,
     pub pipewire: bool,
@@ -60,7 +61,8 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
             None => bail!("scope '{scope_id}' not found in any .claude/wrap.toml"),
         }
     } else {
-        configs.first() // innermost
+        // Use innermost scope with default = true; fall back to none
+        configs.iter().find(|c| c.config.scope.default)
     };
 
     // Merge write paths: selected scope + all ancestor scopes
@@ -79,6 +81,14 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
                 let resolved = resolve_path(&located.base_dir, w);
                 write_paths.push(resolved);
             }
+        }
+    }
+
+    // Auto-detect git repo / worktree and grant write access
+    if let Some(git_paths) = detect_git_repo(&cwd) {
+        write_paths.push(git_paths.work_tree);
+        if let Some(common) = git_paths.common_git_dir {
+            write_paths.push(common);
         }
     }
 
@@ -130,6 +140,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         .unwrap_or_else(|| "claude".to_string());
 
     Ok(ResolvedConfig {
+        scope_id: selected.and_then(|s| s.config.scope.id.clone()),
         write_paths,
         wayland,
         pipewire,
@@ -141,6 +152,59 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         cmd_args: cli.cmd_args.clone(),
         cwd,
         dry_run: cli.dry_run,
+    })
+}
+
+struct GitPaths {
+    /// The worktree root (or repo root if not a worktree)
+    work_tree: PathBuf,
+    /// The common .git dir (only set for worktrees, where it differs from work_tree/.git)
+    common_git_dir: Option<PathBuf>,
+}
+
+/// Detect git repo root and, for worktrees, the common git dir.
+fn detect_git_repo(cwd: &Path) -> Option<GitPaths> {
+    use std::process::Command;
+
+    let toplevel = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if !toplevel.status.success() {
+        return None;
+    }
+    let work_tree = PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
+
+    // Check for worktree: --git-common-dir returns the main repo's .git dir
+    let common = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    let common_git_dir = if common.status.success() {
+        let dir = String::from_utf8_lossy(&common.stdout).trim().to_string();
+        let dir_path = if Path::new(&dir).is_absolute() {
+            PathBuf::from(&dir)
+        } else {
+            work_tree.join(&dir)
+        };
+        // Canonicalize and get the parent — if it differs from work_tree, it's a worktree
+        let canonical = std::fs::canonicalize(&dir_path).ok()?;
+        // The common git dir is e.g. /path/to/repo.git — mount the whole thing
+        // so that worktree refs, packed-refs, objects etc. are writable
+        if !canonical.starts_with(&work_tree) {
+            Some(canonical)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Some(GitPaths {
+        work_tree,
+        common_git_dir,
     })
 }
 

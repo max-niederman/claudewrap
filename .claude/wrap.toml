@@ -1,5 +1,6 @@
 [scope]
 id = "claudewrap"
+default = true
 
 [filesystem]
 write = ["."]

@@ -15,7 +15,11 @@ pub struct WrapConfig {
 #[serde(default)]
 pub struct ScopeConfig {
     pub id: Option<String>,
+    #[serde(default = "default_true")]
+    pub default: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default)]
