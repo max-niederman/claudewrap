@@ -28,17 +28,24 @@ pub fn build_command(
     cmd.arg("--tmpfs").arg("/tmp");
 
     // 5. Write path bind-mounts
-    // Implicit always-writable paths
-    let implicit_writes = [
+    // Implicit always-writable paths — ensure they exist so bwrap can bind them
+    let implicit_dirs = [
         home_path.join(".claude"),
-        home_path.join(".claude.json"),
         config.cwd.join(".claude"),
     ];
+    let implicit_files = [
+        home_path.join(".claude.json"),
+    ];
 
-    for path in &implicit_writes {
-        if path.exists() {
-            cmd.arg("--bind").arg(path).arg(path);
+    for dir in &implicit_dirs {
+        let _ = std::fs::create_dir_all(dir);
+        cmd.arg("--bind").arg(dir).arg(dir);
+    }
+    for file in &implicit_files {
+        if !file.exists() {
+            let _ = std::fs::File::create(file);
         }
+        cmd.arg("--bind").arg(file).arg(file);
     }
 
     // Configured write paths
@@ -109,6 +116,10 @@ pub fn build_command(
 
     // 12. Command + args
     cmd.arg("--").arg(&config.command);
+    // The sandbox is the security boundary — skip Claude's own permission prompts
+    if config.command == "claude" {
+        cmd.arg("--dangerously-skip-permissions");
+    }
     for arg in &config.cmd_args {
         cmd.arg(arg);
     }
