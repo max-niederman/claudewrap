@@ -65,18 +65,17 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         configs.iter().find(|c| c.config.scope.default)
     };
 
-    // Merge write paths: selected scope + all ancestor scopes
+    // Collect write paths from innermost scope up to (and including) the selected scope.
+    // Scopes beyond (outer to) the selected scope are not included.
     let mut write_paths: Vec<PathBuf> = Vec::new();
 
     if let Some(sel) = selected {
-        // Find the index of the selected config
         let sel_idx = configs
             .iter()
             .position(|c| std::ptr::eq(c, sel))
             .unwrap();
 
-        // Add write paths from selected scope and all ancestors (higher indices = further up)
-        for located in &configs[sel_idx..] {
+        for located in &configs[..=sel_idx] {
             for w in &located.config.filesystem.write {
                 let resolved = resolve_path(&located.base_dir, w);
                 write_paths.push(resolved);
@@ -102,17 +101,24 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         write_paths.push(resolved);
     }
 
-    // Socket settings from selected scope (not inherited), with CLI overrides
-    let (cfg_wayland, cfg_pipewire, cfg_dbus, cfg_ssh) = selected
-        .map(|s| {
-            (
-                s.config.sockets.wayland,
-                s.config.sockets.pipewire,
-                s.config.sockets.dbus.clone(),
-                s.config.ssh.clone(),
-            )
-        })
-        .unwrap_or_default();
+    // Socket/SSH settings: OR across all scopes from innermost to selected.
+    // Permissions only expand, never restrict.
+    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus, mut cfg_ssh) =
+        <(bool, bool, DbusMode, SshConfig)>::default();
+
+    if let Some(sel) = selected {
+        let sel_idx = configs
+            .iter()
+            .position(|c| std::ptr::eq(c, sel))
+            .unwrap();
+
+        for located in &configs[..=sel_idx] {
+            cfg_wayland |= located.config.sockets.wayland;
+            cfg_pipewire |= located.config.sockets.pipewire;
+            cfg_dbus = cfg_dbus.merge(&located.config.sockets.dbus);
+            cfg_ssh = cfg_ssh.merge(&located.config.ssh);
+        }
+    }
 
     let wayland = if cli.wayland {
         true

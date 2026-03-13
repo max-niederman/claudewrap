@@ -97,6 +97,35 @@ impl Default for SshConfig {
     }
 }
 
+impl DbusMode {
+    /// OR-merge: most permissive wins. System > Session > Disabled.
+    pub fn merge(&self, other: &DbusMode) -> DbusMode {
+        match (self, other) {
+            (DbusMode::System, _) | (_, DbusMode::System) => DbusMode::System,
+            (DbusMode::Session, _) | (_, DbusMode::Session) => DbusMode::Session,
+            _ => DbusMode::Disabled,
+        }
+    }
+}
+
+impl SshConfig {
+    /// OR-merge: union of permissions across scopes.
+    pub fn merge(&self, other: &SshConfig) -> SshConfig {
+        let mut hosts = self.allow_hosts.clone();
+        for h in &other.allow_hosts {
+            if !hosts.contains(h) {
+                hosts.push(h.clone());
+            }
+        }
+        SshConfig {
+            agent: self.agent || other.agent,
+            allow_signing: self.allow_signing || other.allow_signing,
+            allow_ssh: self.allow_ssh || other.allow_ssh,
+            allow_hosts: hosts,
+        }
+    }
+}
+
 /// A parsed config together with the directory it was found in.
 #[derive(Debug, Clone)]
 pub struct LocatedConfig {
