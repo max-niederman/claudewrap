@@ -4,6 +4,7 @@ mod resolve;
 mod sandbox;
 mod sockets;
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -14,6 +15,21 @@ use signal_hook::iterator::Signals;
 use tracing::{debug, info};
 
 use cli::Cli;
+
+/// Compile-time paths to external binaries, set via env vars during build.
+/// Falls back to bare names (PATH lookup) when not set.
+pub const BWRAP: &str = match option_env!("BWRAP_PATH") {
+    Some(p) => p,
+    None => "bwrap",
+};
+pub const SSH_ADD: &str = match option_env!("SSH_ADD_PATH") {
+    Some(p) => p,
+    None => "ssh-add",
+};
+pub const SSH_AGENT_FILTER: &str = match option_env!("SSH_AGENT_FILTER_PATH") {
+    Some(p) => p,
+    None => "ssh-agent-filter",
+};
 
 fn main() -> ExitCode {
     match run() {
@@ -51,7 +67,9 @@ fn run() -> Result<ExitCode> {
         debug!(command = config.command, args = ?config.cmd_args, "command");
     }
 
-    // Validate host SSH agent if enabled
+    // Validate host SSH agent and start filtered proxy if enabled
+    let mut filter_pid: Option<u32> = None;
+    let mut filter_dir: Option<PathBuf> = None;
     let ssh_info = if config.ssh_agent {
         if config.ssh_keys.is_empty() {
             bail!(
@@ -59,9 +77,14 @@ fn run() -> Result<ExitCode> {
                  Add fingerprints to [ssh] keys in .claude/wrap.toml or pass --ssh-key SHA256:..."
             );
         }
-        let info = validate_host_agent(&config.ssh_keys)?;
-        info!("using host SSH agent at {}", info.sock.display());
-        Some(info)
+        let agent = validate_and_filter_agent(&config.ssh_keys)?;
+        info!("ssh-agent-filter started (pid {}) at {}", agent.filter_pid, agent.sock.display());
+        filter_pid = Some(agent.filter_pid);
+        filter_dir = Some(agent.filter_dir.clone());
+        Some(SshAgentInfo {
+            sock: agent.sock,
+            signing_key: agent.signing_key,
+        })
     } else {
         None
     };
@@ -71,6 +94,7 @@ fn run() -> Result<ExitCode> {
 
     if config.dry_run {
         println!("{}", sandbox::format_command(&cmd));
+        cleanup(filter_pid, filter_dir.as_deref());
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -92,6 +116,8 @@ fn run() -> Result<ExitCode> {
 
     let status = child.wait().context("waiting for bwrap")?;
 
+    cleanup(filter_pid, filter_dir.as_deref());
+
     Ok(ExitCode::from(
         status.code().unwrap_or(1) as u8,
     ))
@@ -103,17 +129,23 @@ pub struct SshAgentInfo {
     pub signing_key: String,
 }
 
-/// Validate the host SSH agent has all requested keys.
-/// Returns socket path and the public key of the first matched key (for git signing).
-fn validate_host_agent(fingerprints: &[String]) -> Result<SshAgentInfo> {
-    let sock = std::env::var("SSH_AUTH_SOCK")
+struct FilteredAgent {
+    sock: PathBuf,
+    signing_key: String,
+    filter_pid: u32,
+    filter_dir: PathBuf,
+}
+
+/// Validate the host SSH agent has all requested keys, then start
+/// ssh-agent-filter to proxy only those keys.
+fn validate_and_filter_agent(fingerprints: &[String]) -> Result<FilteredAgent> {
+    let host_sock = std::env::var("SSH_AUTH_SOCK")
         .context("SSH_AUTH_SOCK is not set — is an ssh-agent running?")?;
-    let sock_path = PathBuf::from(&sock);
 
     // List keys with SHA256 fingerprints
-    let output = std::process::Command::new("ssh-add")
+    let output = std::process::Command::new(SSH_ADD)
         .args(["-l", "-E", "sha256"])
-        .env("SSH_AUTH_SOCK", &sock)
+        .env("SSH_AUTH_SOCK", &host_sock)
         .output()
         .context("running ssh-add -l")?;
 
@@ -137,11 +169,10 @@ fn validate_host_agent(fingerprints: &[String]) -> Result<SshAgentInfo> {
         }
     }
 
-    // Get full public keys to find the matching one for git signing.
-    // ssh-add -l and -L output lines in the same order, so we correlate by index.
-    let pub_output = std::process::Command::new("ssh-add")
+    // Get full public keys — ssh-add -l and -L output in the same order
+    let pub_output = std::process::Command::new(SSH_ADD)
         .args(["-L"])
-        .env("SSH_AUTH_SOCK", &sock)
+        .env("SSH_AUTH_SOCK", &host_sock)
         .output()
         .context("running ssh-add -L")?;
 
@@ -153,18 +184,97 @@ fn validate_host_agent(fingerprints: &[String]) -> Result<SshAgentInfo> {
     let pub_lines: Vec<&str> = pub_stdout.lines().collect();
     let fingerprint_lines: Vec<&str> = listing.lines().collect();
 
-    // Use the first configured fingerprint for git signing
-    let signing_key = fingerprint_lines
-        .iter()
-        .zip(pub_lines.iter())
-        .find(|(fp_line, _)| fp_line.contains(fingerprints[0].as_str()))
-        .map(|(_, pub_line)| pub_line.to_string())
-        .ok_or_else(|| {
-            anyhow::anyhow!("could not find public key for fingerprint {}", fingerprints[0])
-        })?;
+    // Collect the base64 pubkey portion for each matching fingerprint
+    let mut allowed_keys: Vec<String> = Vec::new();
+    let mut signing_key: Option<String> = None;
 
-    Ok(SshAgentInfo {
-        sock: sock_path,
+    for fp in fingerprints {
+        let (_, pub_line) = fingerprint_lines
+            .iter()
+            .zip(pub_lines.iter())
+            .find(|(fp_line, _)| fp_line.contains(fp.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("could not find public key for {fp}"))?;
+
+        // Public key line format: "ssh-ed25519 AAAA... comment"
+        // Extract the base64 portion (second field)
+        let base64_key = pub_line
+            .split_whitespace()
+            .nth(1)
+            .ok_or_else(|| anyhow::anyhow!("malformed public key line for {fp}"))?;
+
+        allowed_keys.push(base64_key.to_string());
+        if signing_key.is_none() {
+            signing_key = Some(pub_line.to_string());
+        }
+    }
+
+    let signing_key = signing_key.unwrap();
+
+    // Create a temp directory for ssh-agent-filter's socket.
+    // It creates the socket as cwd/agent.<pid>.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let filter_dir = PathBuf::from(&runtime_dir).join("claudewrap");
+    fs::create_dir_all(&filter_dir)
+        .with_context(|| format!("creating filter dir {}", filter_dir.display()))?;
+
+    // Start ssh-agent-filter with -k for each allowed key
+    let mut filter_cmd = std::process::Command::new(SSH_AGENT_FILTER);
+    for key in &allowed_keys {
+        filter_cmd.arg("-k").arg(key);
+    }
+    filter_cmd.current_dir(&filter_dir);
+    filter_cmd.env("SSH_AUTH_SOCK", &host_sock);
+
+    let filter_output = filter_cmd.output().context("running ssh-agent-filter")?;
+
+    if !filter_output.status.success() {
+        bail!(
+            "ssh-agent-filter failed: {}",
+            String::from_utf8_lossy(&filter_output.stderr).trim()
+        );
+    }
+
+    // Parse SSH_AUTH_SOCK and SSH_AGENT_PID from output
+    // Output format: SSH_AUTH_SOCK=...; export SSH_AUTH_SOCK;\nSSH_AGENT_PID=...; ...
+    let stdout = String::from_utf8_lossy(&filter_output.stdout);
+
+    let filter_sock = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("SSH_AUTH_SOCK=")
+                .map(|rest| rest.trim_end_matches("; export SSH_AUTH_SOCK;").to_string())
+        })
+        .context("could not parse SSH_AUTH_SOCK from ssh-agent-filter output")?;
+
+    let filter_pid: u32 = stdout
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("SSH_AGENT_PID=")
+                .and_then(|rest| rest.trim_end_matches("; export SSH_AGENT_PID;").parse().ok())
+        })
+        .or_else(|| {
+            stdout.lines().find_map(|line| {
+                line.strip_prefix("echo Agent pid ")
+                    .and_then(|rest| rest.trim_end_matches(';').trim().parse().ok())
+            })
+        })
+        .context("could not parse SSH_AGENT_PID from ssh-agent-filter output")?;
+
+    Ok(FilteredAgent {
+        sock: PathBuf::from(filter_sock),
         signing_key,
+        filter_pid,
+        filter_dir,
     })
+}
+
+fn cleanup(filter_pid: Option<u32>, filter_dir: Option<&std::path::Path>) {
+    if let Some(pid) = filter_pid {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    if let Some(dir) = filter_dir {
+        let _ = fs::remove_dir_all(dir);
+    }
 }

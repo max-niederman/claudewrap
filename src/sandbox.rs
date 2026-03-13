@@ -13,7 +13,7 @@ pub fn build_command(
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
     let home_path = PathBuf::from(&home);
 
-    let mut cmd = Command::new("bwrap");
+    let mut cmd = Command::new(crate::BWRAP);
 
     // 1. Read-only base layer
     cmd.arg("--ro-bind").arg("/").arg("/");
