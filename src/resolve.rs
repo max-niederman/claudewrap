@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 
 use crate::cli::Cli;
-use crate::config::{DbusMode, LocatedConfig, SshConfig, WrapConfig};
+use crate::config::{DbusMode, LocatedConfig, WrapConfig};
 
 /// Fully resolved configuration ready for sandbox building.
 #[derive(Debug)]
@@ -13,9 +13,6 @@ pub struct ResolvedConfig {
     pub wayland: bool,
     pub pipewire: bool,
     pub dbus: DbusMode,
-    pub ssh: SshConfig,
-    pub ssh_allow_all: bool,
-    pub extra_ssh_hosts: Vec<String>,
     pub command: String,
     pub cmd_args: Vec<String>,
     pub cwd: PathBuf,
@@ -76,10 +73,10 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         .filter_map(|s| s.config.scope.id.clone())
         .collect();
 
-    // OR-merge all active scopes: write paths, sockets, SSH — permissions only expand
+    // OR-merge all active scopes: write paths, sockets — permissions only expand
     let mut write_paths: Vec<PathBuf> = Vec::new();
-    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus, mut cfg_ssh) =
-        <(bool, bool, DbusMode, SshConfig)>::default();
+    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus) =
+        <(bool, bool, DbusMode)>::default();
 
     for located in &active {
         for w in &located.config.filesystem.write {
@@ -88,7 +85,6 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         cfg_wayland |= located.config.sockets.wayland;
         cfg_pipewire |= located.config.sockets.pipewire;
         cfg_dbus = cfg_dbus.merge(&located.config.sockets.dbus);
-        cfg_ssh = cfg_ssh.merge(&located.config.ssh);
     }
 
     // Auto-detect git repo / worktree and grant write access
@@ -140,9 +136,6 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         wayland,
         pipewire,
         dbus,
-        ssh: cfg_ssh,
-        ssh_allow_all: cli.ssh_allow_all,
-        extra_ssh_hosts: cli.ssh_allow_hosts.clone(),
         command,
         cmd_args: cli.cmd_args.clone(),
         cwd,

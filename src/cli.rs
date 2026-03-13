@@ -36,14 +36,6 @@ pub struct Cli {
     #[arg(long, value_name = "MODE")]
     pub dbus: Option<String>,
 
-    /// Ad-hoc SSH host allowlist (repeatable)
-    #[arg(long, value_name = "HOST")]
-    pub ssh_allow_hosts: Vec<String>,
-
-    /// Unrestricted SSH access
-    #[arg(long)]
-    pub ssh_allow_all: bool,
-
     /// Print bwrap command, don't execute
     #[arg(long)]
     pub dry_run: bool,

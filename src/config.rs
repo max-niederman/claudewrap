@@ -8,7 +8,6 @@ pub struct WrapConfig {
     pub scope: ScopeConfig,
     pub filesystem: FilesystemConfig,
     pub sockets: SocketsConfig,
-    pub ssh: SshConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -72,24 +71,6 @@ fn deserialize_dbus<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DbusMode, 
     d.deserialize_any(DbusVisitor)
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default)]
-pub struct SshConfig {
-    #[serde(rename = "allow-ssh")]
-    pub allow_ssh: bool,
-    #[serde(rename = "allow-hosts")]
-    pub allow_hosts: Vec<String>,
-}
-
-impl Default for SshConfig {
-    fn default() -> Self {
-        Self {
-            allow_ssh: false,
-            allow_hosts: vec!["github.com".into(), "gitlab.com".into()],
-        }
-    }
-}
-
 impl DbusMode {
     /// OR-merge: most permissive wins. System > Session > Disabled.
     pub fn merge(&self, other: &DbusMode) -> DbusMode {
@@ -97,22 +78,6 @@ impl DbusMode {
             (DbusMode::System, _) | (_, DbusMode::System) => DbusMode::System,
             (DbusMode::Session, _) | (_, DbusMode::Session) => DbusMode::Session,
             _ => DbusMode::Disabled,
-        }
-    }
-}
-
-impl SshConfig {
-    /// OR-merge: union of permissions across scopes.
-    pub fn merge(&self, other: &SshConfig) -> SshConfig {
-        let mut hosts = self.allow_hosts.clone();
-        for h in &other.allow_hosts {
-            if !hosts.contains(h) {
-                hosts.push(h.clone());
-            }
-        }
-        SshConfig {
-            allow_ssh: self.allow_ssh || other.allow_ssh,
-            allow_hosts: hosts,
         }
     }
 }

@@ -6,7 +6,6 @@ mod sockets;
 
 use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -51,7 +50,6 @@ fn run() -> Result<ExitCode> {
         info!(scopes = ?config.active_scopes, "active scopes");
         info!(paths = ?config.write_paths, "write paths");
         info!(wayland = config.wayland, pipewire = config.pipewire, dbus = ?config.dbus, "sockets");
-        info!(ssh = config.ssh.allow_ssh, hosts = ?config.ssh.allow_hosts, "ssh");
         info!(command = config.command, args = ?config.cmd_args, "command");
     }
 
@@ -80,18 +78,10 @@ fn run() -> Result<ExitCode> {
     let agent_pid = start_ssh_agent(&agent_sock, &ssh_key)?;
     info!("ssh-agent started (pid {agent_pid}) at {}", agent_sock.display());
 
-    // Generate SSH wrapper if SSH is restricted
-    let wrapper_bin_dir = if !config.ssh.allow_ssh && !config.ssh_allow_all {
-        Some(generate_ssh_wrapper(&temp_dir, &config)?)
-    } else {
-        None
-    };
-
     // Build bwrap command
     let cmd = sandbox::build_command(
         &config,
         Some(&agent_sock),
-        wrapper_bin_dir.as_deref(),
     );
 
     if config.dry_run {
@@ -220,97 +210,6 @@ fn start_ssh_agent(sock_path: &Path, key_path: &Path) -> Result<u32> {
     }
 
     Ok(agent_pid)
-}
-
-fn generate_ssh_wrapper(temp_dir: &Path, config: &resolve::ResolvedConfig) -> Result<PathBuf> {
-    let bin_dir = temp_dir.join("bin");
-    fs::create_dir_all(&bin_dir)?;
-
-    // Find the real ssh binary path
-    let real_ssh = which_ssh().unwrap_or_else(|| "/usr/bin/ssh".into());
-
-    // Build host allowlist
-    let mut allowed_hosts: Vec<&str> = config
-        .ssh
-        .allow_hosts
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-    for h in &config.extra_ssh_hosts {
-        allowed_hosts.push(h.as_str());
-    }
-
-    let host_check = if allowed_hosts.is_empty() {
-        String::new()
-    } else {
-        let patterns: Vec<String> = allowed_hosts
-            .iter()
-            .map(|h| format!("    \"{h}\") ;;"))
-            .collect();
-        format!(
-            r#"
-case "$host" in
-{patterns}
-    *) echo "claudewrap: SSH to '$host' not allowed" >&2; exit 1 ;;
-esac
-"#,
-            patterns = patterns.join("\n")
-        )
-    };
-
-    let wrapper = format!(
-        r##"#!/bin/sh
-# claudewrap SSH wrapper — restricts SSH usage to git transport only
-
-# Strip dangerous flags, collect clean args
-args=()
-skip_next=false
-for arg in "$@"; do
-    if $skip_next; then
-        skip_next=false
-        continue
-    fi
-    case "$arg" in
-        -A|-L|-R|-D|-W|-N) continue ;;
-        -o|-p|-l|-i|-F) skip_next=true; args+=("$arg") ;;
-        *) args+=("$arg") ;;
-    esac
-done
-
-# Find the host: first non-flag argument after stripping
-host=""
-for arg in "${{args[@]}}"; do
-    case "$arg" in
-        -*) ;;
-        *)
-            if [ -z "$host" ]; then
-                host="$arg"
-            fi
-            ;;
-    esac
-done
-# Strip user@ prefix if present
-host="${{host#*@}}"
-{host_check}
-exec {real_ssh} -F /dev/null "${{args[@]}}"
-"##,
-        real_ssh = real_ssh.display(),
-    );
-
-    let wrapper_path = bin_dir.join("ssh");
-    let mut f = fs::File::create(&wrapper_path)?;
-    f.write_all(wrapper.as_bytes())?;
-    f.set_permissions(fs::Permissions::from_mode(0o755))?;
-
-    Ok(bin_dir)
-}
-
-fn which_ssh() -> Option<PathBuf> {
-    std::env::var("PATH")
-        .ok()?
-        .split(':')
-        .map(|dir| PathBuf::from(dir).join("ssh"))
-        .find(|p| p.is_file())
 }
 
 fn cleanup(temp_dir: &Path, agent_pid: Option<u32>) {

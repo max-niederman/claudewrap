@@ -8,7 +8,6 @@ use crate::sockets::{self, SocketMount};
 pub fn build_command(
     config: &ResolvedConfig,
     agent_sock: Option<&Path>,
-    wrapper_bin_dir: Option<&Path>,
 ) -> Command {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
     let home_path = PathBuf::from(&home);
@@ -74,12 +73,7 @@ pub fn build_command(
     }
 
     // 8. Environment
-    let mut path_val = std::env::var("PATH").unwrap_or_default();
-    if let Some(bin_dir) = wrapper_bin_dir {
-        // Prepend wrapper dir to shadow real ssh
-        path_val = format!("{}:{path_val}", bin_dir.display());
-    }
-
+    let path_val = std::env::var("PATH").unwrap_or_default();
     cmd.arg("--setenv").arg("PATH").arg(&path_val);
 
     for var in &[

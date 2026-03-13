@@ -8,10 +8,9 @@ claudewrap builds a `bwrap` command that:
 
 1. Bind-mounts `/` read-only as the base layer
 2. Grants write access to the current git repo, `~/.claude`, and any paths from config
-3. Spawns a dedicated `ssh-agent` loaded with `~/.ssh/id_claudewrap_ed25519` only — the sandbox never sees your real keys
-4. Wraps `ssh` to restrict connections to allowed hosts (github.com, gitlab.com by default)
-5. Overrides git's signing config to use the sandbox key
-6. Optionally forwards Wayland, PipeWire, and D-Bus sockets
+3. Spawns a dedicated `ssh-agent` loaded with `~/.ssh/id_claudewrap_ed25519` only — the sandbox never sees your real keys, and can only authenticate to hosts where you've added the sandbox public key
+4. Overrides git's signing config to use the sandbox key
+5. Optionally forwards Wayland, PipeWire, and D-Bus sockets
 
 ## Requirements
 
@@ -44,12 +43,6 @@ claudewrap -e bash
 # Grant extra write access
 claudewrap -w /tmp/scratch -w ~/other-project
 
-# Allow SSH to additional hosts
-claudewrap --ssh-allow-hosts my-server.com
-
-# Unrestricted SSH
-claudewrap --ssh-allow-all
-
 # Preview the bwrap command
 claudewrap --dry-run
 ```
@@ -64,8 +57,6 @@ claudewrap --dry-run
 | `--wayland` / `--no-wayland` | Force Wayland socket on/off |
 | `--pipewire` | Enable PipeWire socket |
 | `--dbus MODE` | Enable D-Bus (`session` or `system`) |
-| `--ssh-allow-hosts HOST` | Allow SSH to host (repeatable) |
-| `--ssh-allow-all` | Unrestricted SSH access |
 | `--dry-run` | Print bwrap command without executing |
 | `--verbose` | Show resolved config |
 
@@ -85,10 +76,6 @@ write = ["./build", "/tmp/myproject"]
 wayland = false
 pipewire = false
 dbus = false         # or "session" / "system"
-
-[ssh]
-allow-ssh = false
-allow-hosts = ["github.com", "gitlab.com"]
 ```
 
 ## License
