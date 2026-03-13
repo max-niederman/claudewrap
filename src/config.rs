@@ -75,9 +75,6 @@ fn deserialize_dbus<'de, D: serde::Deserializer<'de>>(d: D) -> Result<DbusMode, 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct SshConfig {
-    pub agent: bool,
-    #[serde(rename = "allow-signing")]
-    pub allow_signing: bool,
     #[serde(rename = "allow-ssh")]
     pub allow_ssh: bool,
     #[serde(rename = "allow-hosts")]
@@ -87,8 +84,6 @@ pub struct SshConfig {
 impl Default for SshConfig {
     fn default() -> Self {
         Self {
-            agent: true,
-            allow_signing: true,
             allow_ssh: false,
             allow_hosts: vec!["github.com".into(), "gitlab.com".into()],
         }
@@ -116,8 +111,6 @@ impl SshConfig {
             }
         }
         SshConfig {
-            agent: self.agent || other.agent,
-            allow_signing: self.allow_signing || other.allow_signing,
             allow_ssh: self.allow_ssh || other.allow_ssh,
             allow_hosts: hosts,
         }
