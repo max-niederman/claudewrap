@@ -1,15 +1,50 @@
-use std::path::PathBuf;
+use std::os::fd::OwnedFd;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+
+use tracing::warn;
 
 use crate::resolve::ResolvedConfig;
 use crate::sockets::{self, SocketMount};
 use crate::SshAgentInfo;
 
+/// Normalize a path (resolve `.` and `..` components) without following symlinks.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = Vec::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
+}
+
+/// Check whether `path` or any of its ancestor components is a symlink.
+fn contains_symlink(path: &Path) -> bool {
+    let mut check = PathBuf::new();
+    for c in path.components() {
+        check.push(c);
+        match check.symlink_metadata() {
+            Ok(meta) if meta.is_symlink() => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Build the bwrap Command from resolved config.
+///
+/// Returns the command and an optional `OwnedFd` for the seccomp filter.
+/// The caller **must** keep the fd alive until the child process is spawned,
+/// because bwrap reads it via `--seccomp FD`.
 pub fn build_command(
     config: &ResolvedConfig,
     ssh: Option<&SshAgentInfo>,
-) -> Command {
+) -> (Command, Option<OwnedFd>) {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".into());
     let home_path = PathBuf::from(&home);
 
@@ -27,7 +62,11 @@ pub fn build_command(
     // 4. Clean tmpdir
     cmd.arg("--tmpfs").arg("/tmp");
 
-    // 5. Write path bind-mounts
+    // 5. Namespace isolation
+    cmd.arg("--unshare-pid");
+    cmd.arg("--unshare-ipc");
+
+    // 6. Write path bind-mounts
     // Implicit always-writable paths — ensure they exist so bwrap can bind them
     let implicit_dirs = [
         home_path.join(".claude"),
@@ -50,20 +89,29 @@ pub fn build_command(
         }
     }
 
-    // Configured write paths
+    // Configured write paths — reject symlinks to prevent escape
     for path in &config.write_paths {
-        let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
-        cmd.arg("--bind").arg(&canonical).arg(&canonical);
+        let normalized = normalize_path(path);
+        if contains_symlink(&normalized) {
+            warn!(
+                "refusing to mount write path containing symlink: {}",
+                path.display()
+            );
+            continue;
+        }
+        if normalized.exists() {
+            cmd.arg("--bind").arg(&normalized).arg(&normalized);
+        }
     }
 
-    // 5b. Protect wrap.toml files — ro-bind after writable mounts to override
+    // 6b. Protect wrap.toml files — ro-bind after writable mounts to override
     for f in &config.config_files {
         if f.exists() {
             cmd.arg("--ro-bind").arg(f).arg(f);
         }
     }
 
-    // 6. Socket bind-mounts
+    // 7. Socket bind-mounts
     let socket_mounts = sockets::resolve_socket_mounts(config);
     for SocketMount {
         host_path,
@@ -73,7 +121,7 @@ pub fn build_command(
         cmd.arg("--bind").arg(host_path).arg(sandbox_path);
     }
 
-    // 7. SSH agent socket — needs a writable bind-mount because
+    // 8. SSH agent socket — needs a writable bind-mount because
     //    connect() on a Unix socket requires write permission, and the
     //    ro-bind root makes everything read-only.
     if let Some(ssh) = ssh {
@@ -82,7 +130,7 @@ pub fn build_command(
         }
     }
 
-    // 8. Environment
+    // 9. Environment
     let path_val = std::env::var("PATH").unwrap_or_default();
     cmd.arg("--setenv").arg("PATH").arg(&path_val);
 
@@ -114,13 +162,32 @@ pub fn build_command(
         cmd.arg("--setenv").arg("GIT_CONFIG_VALUE_1").arg("");
     }
 
-    // 9. Working directory
+    // 10. Seccomp filter
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let seccomp_fd = match crate::seccomp::create_filter() {
+        Ok(fd) => {
+            use std::os::fd::AsRawFd;
+            cmd.arg("--seccomp").arg(fd.as_raw_fd().to_string());
+            Some(fd)
+        }
+        Err(e) => {
+            warn!("failed to create seccomp filter, proceeding without: {e}");
+            None
+        }
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let seccomp_fd: Option<OwnedFd> = {
+        warn!("seccomp filter not supported on this architecture");
+        None
+    };
+
+    // 11. Working directory
     cmd.arg("--chdir").arg(&config.cwd);
 
-    // 10. Die with parent
+    // 12. Die with parent
     cmd.arg("--die-with-parent");
 
-    // 12. Command + args
+    // 13. Command + args
     cmd.arg("--").arg(&config.command);
     // The sandbox is the security boundary — skip Claude's own permission prompts
     if config.command == "claude" {
@@ -130,7 +197,7 @@ pub fn build_command(
         cmd.arg(arg);
     }
 
-    cmd
+    (cmd, seccomp_fd)
 }
 
 /// Format the command for --dry-run display.

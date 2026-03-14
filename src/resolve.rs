@@ -32,7 +32,14 @@ pub fn discover_configs(start: &Path) -> Result<Vec<LocatedConfig>> {
     let mut dir = start.to_path_buf();
     loop {
         let wrap_path = dir.join(".claude").join("wrap.toml");
-        if wrap_path.is_file() {
+        // Only load config files that are regular files — skip symlinks to
+        // prevent a sandboxed process from replacing a config with a symlink
+        // that points to an attacker-controlled file on the next invocation.
+        let is_regular = wrap_path
+            .symlink_metadata()
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+        if is_regular {
             let content = std::fs::read_to_string(&wrap_path)
                 .with_context(|| format!("reading {}", wrap_path.display()))?;
             let config: WrapConfig = toml::from_str(&content)

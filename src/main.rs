@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod resolve;
 mod sandbox;
+mod seccomp;
 mod sockets;
 
 use std::path::PathBuf;
@@ -77,7 +78,7 @@ fn run() -> Result<ExitCode> {
     };
 
     // Build bwrap command
-    let cmd = sandbox::build_command(&config, ssh_info.as_ref());
+    let (cmd, _seccomp_fd) = sandbox::build_command(&config, ssh_info.as_ref());
 
     if config.dry_run {
         println!("{}", sandbox::format_command(&cmd));
@@ -85,10 +86,13 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    // Spawn
+    // Spawn — _seccomp_fd must stay alive here so bwrap can read it
     let mut child = std::process::Command::from(cmd)
         .spawn()
         .context("spawning bwrap")?;
+
+    // Now safe to drop the seccomp fd
+    drop(_seccomp_fd);
 
     // Forward signals
     let child_id = child.id();
