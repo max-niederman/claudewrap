@@ -6,6 +6,7 @@ description = "Sandbox Claude Code with bubblewrap"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 signal-hook = "0.3"
