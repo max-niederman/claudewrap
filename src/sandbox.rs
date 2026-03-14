@@ -45,7 +45,9 @@ pub fn build_command(
         if !file.exists() {
             let _ = std::fs::File::create(file);
         }
-        cmd.arg("--bind").arg(file).arg(file);
+        if file.exists() {
+            cmd.arg("--bind").arg(file).arg(file);
+        }
     }
 
     // Configured write paths
@@ -117,9 +119,6 @@ pub fn build_command(
 
     // 10. Die with parent
     cmd.arg("--die-with-parent");
-
-    // 11. New session
-    cmd.arg("--new-session");
 
     // 12. Command + args
     cmd.arg("--").arg(&config.command);
