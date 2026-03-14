@@ -1,6 +1,6 @@
 # claudewrap
 
-Sandbox [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (or any command) using [bubblewrap](https://github.com/containers/bubblewrap). The filesystem is read-only by default, with explicit write access granted to specific paths. SSH access is optionally passed through from your host agent, filtered by key fingerprint.
+Sandbox [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (or any command) using [bubblewrap](https://github.com/containers/bubblewrap). The filesystem is read-only by default, with explicit write access granted to specific paths. SSH access is provided through a filtering proxy that only exposes configured keys.
 
 ## How it works
 
@@ -8,7 +8,7 @@ claudewrap builds a `bwrap` command that:
 
 1. Bind-mounts `/` read-only as the base layer
 2. Grants write access to the current git repo, `~/.claude`, and any paths from config
-3. Optionally passes through the host SSH agent socket, after verifying it contains all configured key fingerprints — the sandbox sees only the host agent, not your private key files
+3. Runs a built-in SSH agent proxy that only exposes configured keys — the sandbox never has access to other keys in your host agent
 4. Overrides git's signing config to use the first matched key (via `key::` literal format)
 5. Optionally forwards Wayland, PipeWire, and D-Bus sockets
 
