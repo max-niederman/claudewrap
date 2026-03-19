@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use signal_hook::consts::{SIGINT, SIGTERM};
 use signal_hook::iterator::Signals;
-use tracing::{debug, info};
+use tracing::debug;
 
 use cli::Cli;
 
@@ -70,7 +70,7 @@ fn run() -> Result<ExitCode> {
             );
         }
         let info = setup_agent_proxy(&config.ssh_keys)?;
-        info!("SSH agent proxy listening at {}", info.sock.display());
+        debug!("SSH agent proxy listening at {}", info.sock.display());
         proxy_sock = Some(info.sock.clone());
         Some(info)
     } else {
