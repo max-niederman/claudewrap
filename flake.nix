@@ -18,7 +18,10 @@
           strictDeps = true;
           buildInputs = [ ];
           nativeBuildInputs = [ ];
-          BWRAP_PATH = "${pkgs.bubblewrap}/bin/bwrap";
+          # Do not set BWRAP_PATH — fall back to PATH lookup so the NixOS
+          # setuid wrapper at /run/wrappers/bin/bwrap is used when present.
+          # The store bwrap is unprivileged and forces a userns, which makes
+          # root-owned files appear as nobody and breaks ssh config checks.
         };
       in
       {
