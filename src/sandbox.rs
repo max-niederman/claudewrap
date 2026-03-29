@@ -93,9 +93,7 @@ pub fn build_command(
         if !file.exists() {
             let _ = std::fs::File::create(file);
         }
-        if file.exists() {
-            cmd.arg("--bind").arg(file).arg(file);
-        }
+        cmd.arg("--bind").arg(file).arg(file);
     }
 
     // Docker config dir (~/.docker) — buildkit cache, auth, etc.
