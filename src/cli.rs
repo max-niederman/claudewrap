@@ -32,6 +32,10 @@ pub struct Cli {
     #[arg(long)]
     pub pipewire: bool,
 
+    /// Enable Docker socket passthrough
+    #[arg(long)]
+    pub docker: bool,
+
     /// Enable D-Bus socket ("session" or "system")
     #[arg(long, value_name = "MODE")]
     pub dbus: Option<String>,

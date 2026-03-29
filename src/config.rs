@@ -42,6 +42,8 @@ pub struct SocketsConfig {
     pub wayland: bool,
     #[serde(default)]
     pub pipewire: bool,
+    #[serde(default)]
+    pub docker: bool,
     #[serde(default, deserialize_with = "deserialize_dbus")]
     pub dbus: DbusMode,
 }

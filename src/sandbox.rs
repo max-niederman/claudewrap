@@ -62,6 +62,15 @@ pub fn build_command(
     // 4. Clean tmpdir
     cmd.arg("--tmpfs").arg("/tmp");
 
+    // 4b. Neutralize system SSH config to avoid "Bad owner or permissions"
+    //     errors. On NixOS, ssh_config includes files from /nix/store owned
+    //     by nobody:nogroup, which SSH rejects. The sandbox doesn't need
+    //     system SSH config — keys are handled by the agent proxy.
+    let ssh_config = Path::new("/etc/ssh/ssh_config");
+    if let Ok(resolved) = ssh_config.canonicalize() {
+        cmd.arg("--ro-bind").arg("/dev/null").arg(&resolved);
+    }
+
     // 5. Namespace isolation
     cmd.arg("--unshare-pid");
     cmd.arg("--unshare-ipc");
@@ -87,6 +96,13 @@ pub fn build_command(
         if file.exists() {
             cmd.arg("--bind").arg(file).arg(file);
         }
+    }
+
+    // Docker config dir (~/.docker) — buildkit cache, auth, etc.
+    if config.docker {
+        let docker_dir = home_path.join(".docker");
+        let _ = std::fs::create_dir_all(&docker_dir);
+        cmd.arg("--bind").arg(&docker_dir).arg(&docker_dir);
     }
 
     // Configured write paths — reject symlinks to prevent escape

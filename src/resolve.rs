@@ -12,6 +12,7 @@ pub struct ResolvedConfig {
     pub write_paths: Vec<PathBuf>,
     pub wayland: bool,
     pub pipewire: bool,
+    pub docker: bool,
     pub dbus: DbusMode,
     pub command: String,
     pub cmd_args: Vec<String>,
@@ -88,8 +89,8 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
 
     // OR-merge all active scopes: write paths, sockets — permissions only expand
     let mut write_paths: Vec<PathBuf> = Vec::new();
-    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_dbus) =
-        <(bool, bool, DbusMode)>::default();
+    let (mut cfg_wayland, mut cfg_pipewire, mut cfg_docker, mut cfg_dbus) =
+        <(bool, bool, bool, DbusMode)>::default();
 
     for located in &active {
         for w in &located.config.filesystem.write {
@@ -97,6 +98,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         }
         cfg_wayland |= located.config.sockets.wayland;
         cfg_pipewire |= located.config.sockets.pipewire;
+        cfg_docker |= located.config.sockets.docker;
         cfg_dbus = cfg_dbus.merge(&located.config.sockets.dbus);
     }
 
@@ -127,6 +129,8 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
     };
 
     let pipewire = if cli.pipewire { true } else { cfg_pipewire };
+
+    let docker = if cli.docker { true } else { cfg_docker };
 
     let dbus = if let Some(ref mode) = cli.dbus {
         match mode.as_str() {
@@ -170,6 +174,7 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         write_paths,
         wayland,
         pipewire,
+        docker,
         dbus,
         command,
         cmd_args: cli.cmd_args.clone(),

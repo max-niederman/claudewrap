@@ -39,6 +39,16 @@ pub fn resolve_socket_mounts(config: &ResolvedConfig) -> Vec<SocketMount> {
         }
     }
 
+    if config.docker {
+        let sock = PathBuf::from("/run/docker.sock");
+        if sock.exists() {
+            mounts.push(SocketMount {
+                sandbox_path: sock.clone(),
+                host_path: sock,
+            });
+        }
+    }
+
     match config.dbus {
         DbusMode::Session => {
             let path = PathBuf::from(&runtime_dir).join("bus");
