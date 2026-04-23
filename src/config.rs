@@ -33,6 +33,16 @@ pub struct ScopeConfig {
 pub struct FilesystemConfig {
     #[serde(default)]
     pub write: Vec<String>,
+    /// Explicit read-only paths. Mostly a no-op (the base is ro-bind /), but
+    /// an exact match cancels a default mask.
+    #[serde(default)]
+    pub read: Vec<String>,
+    /// Paths to hide from the sandbox. Directories become tmpfs, files
+    /// are shadowed with /dev/null. Leading `~/` is expanded to $HOME.
+    /// Default masks (~/.config/gcloud, ~/.aws) are cancelled when the exact
+    /// path appears in `write` or `read`.
+    #[serde(default)]
+    pub mask: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

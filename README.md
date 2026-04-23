@@ -8,9 +8,10 @@ claudewrap builds a `bwrap` command that:
 
 1. Bind-mounts `/` read-only as the base layer
 2. Grants write access to the current git repo, `~/.claude`, and any paths from config
-3. Runs a built-in SSH agent proxy that only exposes configured keys — the sandbox never has access to other keys in your host agent
-4. Overrides git's signing config to use the first matched key (via `key::` literal format)
-5. Optionally forwards Wayland, PipeWire, and D-Bus sockets
+3. Hides sensitive paths (`~/.config/gcloud` and `~/.aws` by default) via tmpfs so the sandbox can't read host credentials
+4. Runs a built-in SSH agent proxy that only exposes configured keys — the sandbox never has access to other keys in your host agent
+5. Overrides git's signing config to use the first matched key (via `key::` literal format)
+6. Optionally forwards Wayland, PipeWire, and D-Bus sockets
 
 ## Requirements
 
@@ -52,6 +53,12 @@ claudewrap -e bash
 # Grant extra write access
 claudewrap -w /tmp/scratch -w ~/other-project
 
+# Hide extra paths from the sandbox (tmpfs for dirs, /dev/null for files)
+claudewrap --mask ~/.netrc
+
+# Opt out of a default mask by naming the exact path in --read or --write
+claudewrap --read ~/.aws
+
 # Preview the bwrap command
 claudewrap --dry-run
 ```
@@ -62,6 +69,8 @@ claudewrap --dry-run
 |---|---|
 | `-e, --exec CMD` | Command to run (default: `claude`) |
 | `-w, --write PATH` | Grant write access (repeatable) |
+| `-r, --read PATH` | Grant read-only access (repeatable); an exact match cancels a default mask |
+| `--mask PATH` | Hide a path (repeatable). `~/.config/gcloud` and `~/.aws` are masked by default; list the exact path under `read` or `write` to opt out |
 | `-s, --scope ID` | Activate a named scope (repeatable) |
 | `--ssh-key FINGERPRINT` | Allow SSH key from host agent (repeatable; implies agent passthrough) |
 | `--no-ssh-agent` | Disable SSH agent passthrough |
@@ -82,6 +91,10 @@ default = true       # auto-activate this scope
 
 [filesystem]
 write = ["./build", "/tmp/myproject"]
+# Additional paths to hide. ~/.config/gcloud and ~/.aws are masked by default;
+# list the exact path under `read` or `write` to opt out.
+mask = ["~/.netrc"]
+read = ["~/.aws"]
 
 [sockets]
 wayland = false

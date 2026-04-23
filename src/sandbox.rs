@@ -125,6 +125,31 @@ pub fn build_command(
         }
     }
 
+    // 6c. Explicit read-only paths. Mostly redundant with the base ro-bind,
+    //     but lets a user re-expose a default-masked path by listing it.
+    for path in &config.read_paths {
+        let normalized = normalize_path(path);
+        if normalized.exists() {
+            cmd.arg("--ro-bind").arg(&normalized).arg(&normalized);
+        }
+    }
+
+    // 6d. Mask paths — applied last so they win over any earlier bind-mount.
+    //     Skip paths that don't exist on the host: the ro-bind root means the
+    //     sandbox can't create them anyway.
+    for path in &config.mask_paths {
+        let normalized = normalize_path(path);
+        match std::fs::symlink_metadata(&normalized) {
+            Ok(meta) if meta.is_file() => {
+                cmd.arg("--ro-bind").arg("/dev/null").arg(&normalized);
+            }
+            Ok(_) => {
+                cmd.arg("--tmpfs").arg(&normalized);
+            }
+            Err(_) => {}
+        }
+    }
+
     // 7. Socket bind-mounts
     let socket_mounts = sockets::resolve_socket_mounts(config);
     for SocketMount {

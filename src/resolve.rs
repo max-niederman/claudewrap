@@ -10,6 +10,11 @@ use crate::config::{DbusMode, LocatedConfig, WrapConfig};
 pub struct ResolvedConfig {
     pub active_scopes: Vec<String>,
     pub write_paths: Vec<PathBuf>,
+    /// Explicit read-only paths (ro-bound into the sandbox).
+    pub read_paths: Vec<PathBuf>,
+    /// Paths to hide inside the sandbox (applied after all bind-mounts).
+    /// Already filtered: paths with an exact match in write/read are dropped.
+    pub mask_paths: Vec<PathBuf>,
     pub wayland: bool,
     pub pipewire: bool,
     pub docker: bool,
@@ -120,6 +125,57 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
         write_paths.push(resolved);
     }
 
+    // Read paths: explicit ro-bind entries, used to re-expose a default mask.
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let mut read_paths: Vec<PathBuf> = Vec::new();
+    for located in &active {
+        for r in &located.config.filesystem.read {
+            read_paths.push(resolve_mask_path(&located.base_dir, r, home.as_deref()));
+        }
+    }
+    for r in &cli.read {
+        let s = r.to_string_lossy();
+        let expanded = expand_tilde(&s, home.as_deref());
+        let resolved = if expanded.is_absolute() {
+            expanded
+        } else {
+            cwd.join(expanded)
+        };
+        read_paths.push(resolved);
+    }
+
+    // Mask paths: default credential stores + any user-configured paths.
+    // Default entries are cancelled by an exact-path match in write or read.
+    let mut default_masks: Vec<PathBuf> = Vec::new();
+    if let Some(ref h) = home {
+        default_masks.push(h.join(".config/gcloud"));
+        default_masks.push(h.join(".aws"));
+    }
+    let exempt: std::collections::HashSet<PathBuf> = write_paths
+        .iter()
+        .chain(read_paths.iter())
+        .map(|p| normalize_for_compare(p))
+        .collect();
+    let mut mask_paths: Vec<PathBuf> = default_masks
+        .into_iter()
+        .filter(|p| !exempt.contains(&normalize_for_compare(p)))
+        .collect();
+    for located in &active {
+        for m in &located.config.filesystem.mask {
+            mask_paths.push(resolve_mask_path(&located.base_dir, m, home.as_deref()));
+        }
+    }
+    for m in &cli.mask {
+        let s = m.to_string_lossy();
+        let expanded = expand_tilde(&s, home.as_deref());
+        let resolved = if expanded.is_absolute() {
+            expanded
+        } else {
+            cwd.join(expanded)
+        };
+        mask_paths.push(resolved);
+    }
+
     let wayland = if cli.wayland {
         true
     } else if cli.no_wayland {
@@ -172,6 +228,8 @@ pub fn resolve(cli: &Cli) -> Result<ResolvedConfig> {
     Ok(ResolvedConfig {
         active_scopes,
         write_paths,
+        read_paths,
+        mask_paths,
         wayland,
         pipewire,
         docker,
@@ -245,5 +303,42 @@ fn resolve_path(base_dir: &Path, path_str: &str) -> PathBuf {
         p.to_path_buf()
     } else {
         base_dir.join(p)
+    }
+}
+
+/// Collapse `.` / `..` and drop trailing empty components so two path
+/// spellings of the same location compare equal. Does not follow symlinks.
+fn normalize_for_compare(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = Vec::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.iter().collect()
+}
+
+/// Expand a leading `~/` or bare `~` to $HOME. Returns input unchanged if
+/// HOME isn't set or the string doesn't start with `~`.
+fn expand_tilde(s: &str, home: Option<&Path>) -> PathBuf {
+    match (home, s) {
+        (Some(h), "~") => h.to_path_buf(),
+        (Some(h), _) if s.starts_with("~/") => h.join(&s[2..]),
+        _ => PathBuf::from(s),
+    }
+}
+
+/// Resolve a mask path string: tilde first, then absolute-or-relative-to-base.
+fn resolve_mask_path(base_dir: &Path, path_str: &str, home: Option<&Path>) -> PathBuf {
+    let expanded = expand_tilde(path_str, home);
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        base_dir.join(expanded)
     }
 }

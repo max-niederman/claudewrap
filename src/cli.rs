@@ -16,6 +16,16 @@ pub struct Cli {
     #[arg(short, long, value_name = "PATH")]
     pub write: Vec<PathBuf>,
 
+    /// Grant ad-hoc read-only access (repeatable). Cancels a default mask
+    /// when the path matches exactly.
+    #[arg(short, long, value_name = "PATH")]
+    pub read: Vec<PathBuf>,
+
+    /// Hide a path from the sandbox (repeatable). Directories become tmpfs,
+    /// files are shadowed with /dev/null.
+    #[arg(long, value_name = "PATH")]
+    pub mask: Vec<PathBuf>,
+
     /// Run CMD instead of `claude` inside sandbox
     #[arg(short, long, value_name = "CMD")]
     pub exec: Option<String>,

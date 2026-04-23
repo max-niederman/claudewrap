@@ -56,6 +56,7 @@ fn run() -> Result<ExitCode> {
     if cli.verbose {
         debug!(scopes = ?config.active_scopes, "active scopes");
         debug!(paths = ?config.write_paths, "write paths");
+        debug!(paths = ?config.mask_paths, "mask paths");
         debug!(wayland = config.wayland, pipewire = config.pipewire, dbus = ?config.dbus, "sockets");
         debug!(command = config.command, args = ?config.cmd_args, "command");
     }
